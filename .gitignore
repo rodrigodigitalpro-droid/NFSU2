@@ -1,0 +1,37 @@
+# --- Never commit EA's game files. The mod ships replacements only; players
+# --- supply their own copy of NFSU2.
+*.exe
+*.BUN
+*.bun
+*.BIN
+*.bin
+*.LZC
+*.lzc
+*.VIV
+*.viv
+*.ABK
+*.abk
+*.GIN
+*.gin
+GLOBAL/
+CARS/
+TRACKS/
+FRONTEND/
+LANGUAGES/
+MOVIES/
+SOUND/
+
+# Remix captures contain the original game's meshes and textures.
+captures/
+**/rtx-remix/captures/
+
+# Toolkit/runtime caches and logs
+*.dxvk-cache
+*.log
+**/.thumbs/
+**/rtx-remix/logs/
+__pycache__/
+*.pyc
+
+# Source images belong in the art repo / DCC folders, not next to ingested DDS
+# (tools/texture_budget.py flags any that slip into the mod folder).
