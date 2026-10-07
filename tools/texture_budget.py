@@ -73,28 +73,39 @@ DXGI_FORMATS = {
     97: ("BC7", 16, 0), 98: ("BC7", 16, 0), 99: ("BC7", 16, 0),
 }
 
-# RTX Remix names ingested PBR textures <name>.<channel>.rtex.dds. Formats
-# follow what the Remix ingestor writes for each channel.
+# RTX Remix names ingested textures <name>.<suffix>.rtex.dds and picks one
+# block format per texture type. Both tables mirror the Toolkit source:
+# omni.flux.asset_importer.core data_models/constants.py
+# (TEXTURE_TYPE_CONVERTED_SUFFIX_MAP) and lightspeed.trex.asset_pipeline.core
+# constants.py (texture type -> BlockFormat).
 ROLE_BY_SUFFIX = {
     "a": "albedo",
-    "n": "normal",
     "r": "roughness",
     "m": "metallic",
     "e": "emissive",
+    "n": "normal",
     "h": "height",
-    "t": "transmittance",
+    "tr": "transmittance",
+    "an": "anisotropy",
+    "md": "measurement_distance",
+    "ss": "single_scattering",
+    "s": "skybox",
 }
-ALLOWED_FORMATS = {
-    "albedo": {"BC7", "BC1", "BC3"},
-    "normal": {"BC5"},
-    "roughness": {"BC4"},
-    "metallic": {"BC4"},
-    "emissive": {"BC7", "BC1"},
-    "height": {"BC4"},
-    "transmittance": {"BC7", "BC1"},
+EXPECTED_FORMAT = {
+    "albedo": "BC7",
+    "emissive": "BC7",
+    "transmittance": "BC7",
+    "single_scattering": "BC7",
+    "normal": "BC5",
+    "roughness": "BC4",
+    "metallic": "BC4",
+    "anisotropy": "BC4",
+    "measurement_distance": "BC4",
+    "height": "BC4",
+    "skybox": "BC6H",
 }
-MASK_ROLES = {"roughness", "metallic", "height"}
-RTEX_RE = re.compile(r"\.([a-z])\.rtex\.dds$", re.IGNORECASE)
+MASK_ROLES = {"roughness", "metallic", "anisotropy", "measurement_distance", "height"}
+RTEX_RE = re.compile(r"\.([a-z]{1,2})\.rtex\.dds$", re.IGNORECASE)
 SOURCE_IMAGE_EXTS = {".png", ".tga", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".exr", ".psd"}
 
 
@@ -185,7 +196,8 @@ def role_for(path: Path) -> str | None:
     return ROLE_BY_SUFFIX.get(m.group(1).lower()) if m else None
 
 
-def check_texture(path: Path, root: Path, max_res: int, max_res_mask: int) -> TextureReport:
+def check_texture(path: Path, root: Path, max_res: int, max_res_mask: int,
+                  max_res_sky: int = 8192) -> TextureReport:
     with path.open("rb") as f:
         hdr = parse_dds_header(f.read(148))
     role = role_for(path)
@@ -206,16 +218,16 @@ def check_texture(path: Path, root: Path, max_res: int, max_res_mask: int) -> Te
         rep.errors.append(f"non power-of-two size {w}x{h}")
     if max(w, h) > 4 and hdr["mips"] < full_mip_count(w, h):
         rep.errors.append(f"mip chain {hdr['mips']}/{full_mip_count(w, h)}")
-    cap = max_res_mask if role in MASK_ROLES else max_res
+    cap = max_res_mask if role in MASK_ROLES else max_res_sky if role == "skybox" else max_res
     if max(w, h) > cap:
         rep.errors.append(f"{w}x{h} exceeds {cap} cap for {role or 'texture'}")
-    if role and hdr["block_bytes"] and hdr["fmt"] not in ALLOWED_FORMATS[role]:
-        allowed = "/".join(sorted(ALLOWED_FORMATS[role]))
-        rep.warnings.append(f"{role} stored as {hdr['fmt']}, expected {allowed}")
+    if role and hdr["block_bytes"] and hdr["fmt"] != EXPECTED_FORMAT[role]:
+        rep.warnings.append(f"{role} stored as {hdr['fmt']}, Remix ingests it as {EXPECTED_FORMAT[role]}")
     return rep
 
 
-def scan(root: Path, max_res: int, max_res_mask: int) -> tuple[list[TextureReport], list[str]]:
+def scan(root: Path, max_res: int, max_res_mask: int,
+         max_res_sky: int = 8192) -> tuple[list[TextureReport], list[str]]:
     reports: list[TextureReport] = []
     problems: list[str] = []
     for path in sorted(p for p in root.rglob("*") if p.is_file()):
@@ -223,7 +235,7 @@ def scan(root: Path, max_res: int, max_res_mask: int) -> tuple[list[TextureRepor
         rel = path.relative_to(root).as_posix()
         if ext == ".dds":
             try:
-                reports.append(check_texture(path, root, max_res, max_res_mask))
+                reports.append(check_texture(path, root, max_res, max_res_mask, max_res_sky))
             except DDSError as exc:
                 problems.append(f"{rel}: {exc}")
         elif ext in SOURCE_IMAGE_EXTS:
@@ -241,6 +253,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--budget-mb", type=float, default=6144, help="total texture VRAM budget (MiB)")
     ap.add_argument("--max-res", type=int, default=4096, help="resolution cap for colour/normal maps")
     ap.add_argument("--max-res-mask", type=int, default=2048, help="cap for roughness/metallic/height")
+    ap.add_argument("--max-res-sky", type=int, default=8192, help="cap for skybox textures")
     ap.add_argument("--top", type=int, default=15, help="list the N largest textures")
     ap.add_argument("--json", type=Path, help="write the full report as JSON")
     args = ap.parse_args(argv)
@@ -248,7 +261,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.root.is_dir():
         ap.error(f"{args.root} is not a directory")
 
-    reports, problems = scan(args.root, args.max_res, args.max_res_mask)
+    reports, problems = scan(args.root, args.max_res, args.max_res_mask, args.max_res_sky)
     total = sum(r.vram_bytes for r in reports)
     n_err = len(problems) + sum(len(r.errors) for r in reports)
     n_warn = sum(len(r.warnings) for r in reports)

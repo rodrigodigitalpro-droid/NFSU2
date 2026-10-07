@@ -63,7 +63,18 @@ class TextureBudgetTest(unittest.TestCase):
     def test_wrong_format_for_role_warns(self):
         r = self.check("rim.n.rtex.dds", width=512, height=512, mips=10, fourcc=b"DXT5")
         self.assertEqual(r.errors, [])
-        self.assertEqual(r.warnings, ["normal stored as BC3, expected BC5"])
+        self.assertEqual(r.warnings, ["normal stored as BC3, Remix ingests it as BC5"])
+
+    def test_two_letter_suffix_roles(self):
+        r = self.check("glass.tr.rtex.dds", width=256, height=256, mips=9, dxgi=98)
+        self.assertEqual((r.role, r.warnings), ("transmittance", []))
+        r = self.check("paint.an.rtex.dds", width=4096, height=4096, mips=13, fourcc=b"BC4U")
+        self.assertEqual(r.role, "anisotropy")
+        self.assertTrue(any("2048 cap" in e for e in r.errors))
+
+    def test_hdr_sky_uses_sky_cap(self):
+        r = self.check("night.s.rtex.dds", width=8192, height=4096, mips=14, dxgi=95)
+        self.assertEqual((r.role, r.fmt, r.errors, r.warnings), ("skybox", "BC6H", [], []))
 
     def test_cubemap_counts_six_faces(self):
         r = self.check("sky.dds", width=64, height=64, mips=1, cube=True)
